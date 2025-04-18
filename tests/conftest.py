@@ -18,14 +18,21 @@ from builtins import range
 from datetime import datetime
 from unittest.mock import patch
 from uuid import uuid4
+import uuid
+import os
+
+# Set SMTP_SERVER and SERVER_BASE_URL env vars
+os.environ["SMTP_SERVER"] = "localhost"
+os.environ["SERVER_BASE_URL"] = "http://testserver/"
 
 # Third-party imports
 import pytest
 from fastapi.testclient import TestClient
-from httpx import AsyncClient
+from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, scoped_session
 from faker import Faker
+from app.utils.smtp_connection import SMTPClient
 
 # Application-specific imports
 from app.main import app
@@ -40,7 +47,11 @@ from app.services.jwt_service import create_access_token
 fake = Faker()
 
 settings = get_settings()
+# Force DB host to localhost for local tests
+if "@postgres" in settings.database_url:
+    settings.database_url = settings.database_url.replace("@postgres", "@localhost")
 TEST_DATABASE_URL = settings.database_url.replace("postgresql://", "postgresql+asyncpg://")
+print(f"[TEST_DATABASE_URL] {TEST_DATABASE_URL}")
 engine = create_async_engine(TEST_DATABASE_URL, echo=settings.debug)
 AsyncTestingSessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 AsyncSessionScoped = scoped_session(AsyncTestingSessionLocal)
@@ -57,12 +68,11 @@ def email_service():
 # this is what creates the http client for your api tests
 @pytest.fixture(scope="function")
 async def async_client(db_session):
-    async with AsyncClient(app=app, base_url="http://testserver") as client:
-        app.dependency_overrides[get_db] = lambda: db_session
-        try:
-            yield client
-        finally:
-            app.dependency_overrides.clear()
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver"
+    ) as client:
+        yield client
 
 @pytest.fixture(scope="session", autouse=True)
 def initialize_database():
@@ -71,16 +81,25 @@ def initialize_database():
     except Exception as e:
         pytest.fail(f"Failed to initialize the database: {str(e)}")
 
+# Automatically mock SMTPClient.send_email in all tests to avoid network errors
+@pytest.fixture(autouse=True)
+def mock_send_email():
+    with patch.object(SMTPClient, "send_email", return_value=None):
+        yield
+
 # this function setup and tears down (drops tales) for each test function, so you have a clean database for each test.
 @pytest.fixture(scope="function", autouse=True)
 async def setup_database():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield
-    async with engine.begin() as conn:
-        # you can comment out this line during development if you are debugging a single test
-         await conn.run_sync(Base.metadata.drop_all)
-    await engine.dispose()
+    try:
+        async with engine.begin() as conn:
+            print("[DEBUG] Creating all tables...")
+            await conn.run_sync(Base.metadata.create_all)
+        yield
+    finally:
+        async with engine.begin() as conn:
+            print("[DEBUG] Dropping all tables...")
+            await conn.run_sync(Base.metadata.drop_all)
+        await engine.dispose()
 
 @pytest.fixture(scope="function")
 async def db_session(setup_database):
@@ -215,9 +234,10 @@ async def manager_user(db_session: AsyncSession):
 @pytest.fixture
 def user_base_data():
     return {
-        "username": "john_doe_123",
+        "nickname": "john_doe_123",
         "email": "john.doe@example.com",
-        "full_name": "John Doe",
+        "first_name": "John",
+        "last_name": "Doe",
         "bio": "I am a software engineer with over 5 years of experience.",
         "profile_picture_url": "https://example.com/profile_pictures/john_doe.jpg"
     }
@@ -225,9 +245,10 @@ def user_base_data():
 @pytest.fixture
 def user_base_data_invalid():
     return {
-        "username": "john_doe_123",
+        "nickname": "john_doe_123",
         "email": "john.doe.example.com",
-        "full_name": "John Doe",
+        "first_name": "John",
+        "last_name": "Doe",
         "bio": "I am a software engineer with over 5 years of experience.",
         "profile_picture_url": "https://example.com/profile_pictures/john_doe.jpg"
     }
@@ -241,7 +262,8 @@ def user_create_data(user_base_data):
 def user_update_data():
     return {
         "email": "john.doe.new@example.com",
-        "full_name": "John H. Doe",
+        "first_name": "John H.",
+        "last_name": "Doe",
         "bio": "I specialize in backend development with Python and Node.js.",
         "profile_picture_url": "https://example.com/profile_pictures/john_doe_updated.jpg"
     }
@@ -249,15 +271,18 @@ def user_update_data():
 @pytest.fixture
 def user_response_data():
     return {
-        "id": "unique-id-string",
-        "username": "testuser",
+        "id": uuid.uuid4(),
+        "nickname": "testuser",
         "email": "test@example.com",
         "last_login_at": datetime.now(),
         "created_at": datetime.now(),
         "updated_at": datetime.now(),
-        "links": []
+        "first_name": "Test",
+        "last_name": "User",
+        "bio": "Test user bio.",
+        "profile_picture_url": "https://example.com/profile.jpg"
     }
 
 @pytest.fixture
 def login_request_data():
-    return {"username": "john_doe_123", "password": "SecurePassword123!"}
+    return {"email": "john.doe@example.com", "password": "SecurePassword123!"}

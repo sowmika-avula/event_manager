@@ -4,7 +4,10 @@ from starlette.responses import JSONResponse
 from app.database import Database
 from app.dependencies import get_settings
 from app.routers import user_routes
+from app.routes import event_routes
 from app.utils.api_description import getDescription
+import traceback
+
 app = FastAPI(
     title="User Management",
     description=getDescription(),
@@ -24,8 +27,9 @@ async def startup_event():
 
 @app.exception_handler(Exception)
 async def exception_handler(request, exc):
-    return JSONResponse(status_code=500, content={"message": "An unexpected error occurred."})
+    print("[ERROR] Unhandled exception:")
+    print(traceback.format_exc())
+    return JSONResponse(status_code=500, content={"message": str(exc)})
 
 app.include_router(user_routes.router)
-
-
+app.include_router(event_routes.router)
