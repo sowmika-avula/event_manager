@@ -54,3 +54,5 @@ During this assignment, I:
 - [x] All issues/PRs documented and merged.
 
 ---
+
+# Trigger workflow for GitHub Actions
